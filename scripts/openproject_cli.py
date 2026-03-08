@@ -1866,14 +1866,20 @@ def command_log_spent_hours(args: argparse.Namespace) -> None:
         subject=args.work_package,
         type_name=args.type,
     )
-    wp_id = wp.get("id", "?")
+    wp_id = wp.get("id")
+    try:
+        wp_id_int = int(wp_id)
+    except (TypeError, ValueError):
+        raise OpenProjectError(
+            f"Work package payload has a missing or non-numeric 'id': {wp_id!r}"
+        )
     if created:
-        print(f"Created work package #{wp_id}: {wp.get('subject', args.work_package)}")
+        print(f"Created work package #{wp_id_int}: {wp.get('subject', args.work_package)}")
     else:
-        print(f"Found existing work package #{wp_id}: {wp.get('subject', args.work_package)}")
+        print(f"Found existing work package #{wp_id_int}: {wp.get('subject', args.work_package)}")
 
     time_entry = client.log_time(
-        work_package_id=int(wp_id),
+        work_package_id=wp_id_int,
         hours=args.hours,
         activity_name=args.activity,
         spent_on=spent_on,
