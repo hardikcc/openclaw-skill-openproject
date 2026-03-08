@@ -886,6 +886,105 @@ class OpenProjectClient:
                 "PATCH comment, or activities endpoint on this server/version."
             ) from fallback_error
 
+    def get_time_entry_activities(self) -> List[Dict[str, Any]]:
+        """Return available time entry activity types."""
+        data = self._request("GET", "/time_entries/activities", expected_statuses=(200,))
+        return extract_embedded_elements(data)
+
+    def resolve_time_entry_activity(self, activity_name: str) -> Tuple[str, str]:
+        """Resolve a time entry activity by name and return (name, href)."""
+        lowered_target = activity_name.strip().lower()
+        activities = self.get_time_entry_activities()
+        available: List[str] = []
+        for activity in activities:
+            name = str(activity.get("name", "")).strip()
+            href = nested_get(activity, ["_links", "self", "href"], "")
+            if name:
+                available.append(name)
+            if name and name.lower() == lowered_target:
+                return name, href if href else f"{API_PREFIX}/time_entries/activities/{activity.get('id')}"
+        if available:
+            hint = ", ".join(sorted(set(available)))
+            raise OpenProjectError(
+                f"Unknown time entry activity '{activity_name}'. Available activities: {hint}"
+            )
+        raise OpenProjectError("No time entry activities were returned by OpenProject.")
+
+    def find_or_create_work_package(
+        self,
+        project: Dict[str, Any],
+        subject: str,
+        type_name: str = "Task",
+        description: Optional[str] = None,
+        limit: int = 200,
+    ) -> Tuple[Dict[str, Any], bool]:
+        """Find an existing work package by subject in a project, or create it.
+
+        Returns a tuple of (work_package, created) where *created* is True when
+        a new work package was created and False when an existing one was found.
+
+        Note: up to *limit* work packages (default 200) are fetched for the
+        subject search. In projects with more work packages than the limit some
+        existing packages may not be found and a duplicate could be created.
+        Increase *limit* if the project is very large.
+        """
+        project_id = int(project["id"])
+        existing = self.list_work_packages(project_id, limit=limit)
+        for wp in existing:
+            if wp.get("subject") == subject:
+                return wp, False
+        created = self.create_work_package(
+            project=project,
+            subject=subject,
+            type_name=type_name,
+            description=description,
+        )
+        return created, True
+
+    def log_time(
+        self,
+        work_package_id: int,
+        hours: float,
+        activity_name: str,
+        spent_on: Optional[str] = None,
+        comment: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Log spent hours on a work package.
+
+        Parameters
+        ----------
+        work_package_id:
+            The numeric ID of the work package to log time against.
+        hours:
+            Number of hours to log (e.g. 1.0 for one hour). Must be positive.
+        activity_name:
+            Name of the time entry activity (e.g. "Internal discussion and meetings").
+        spent_on:
+            Date the time was spent (``YYYY-MM-DD``). Defaults to today.
+        comment:
+            Optional free-text comment for the time entry.
+        """
+        if hours <= 0:
+            raise OpenProjectError("hours must be a positive number.")
+
+        _, activity_href = self.resolve_time_entry_activity(activity_name)
+
+        iso_duration = hours_to_iso_duration(hours)
+        date_value = spent_on if spent_on else datetime.now().date().isoformat()
+
+        payload: Dict[str, Any] = {
+            "hours": iso_duration,
+            "spentOn": date_value,
+            "_links": {
+                "workPackage": {"href": f"{API_PREFIX}/work_packages/{work_package_id}"},
+                "activity": {"href": activity_href},
+            },
+        }
+        if comment:
+            payload["comment"] = {"raw": comment}
+
+        return self._request("POST", "/time_entries", payload=payload, expected_statuses=(200, 201))
+
 
 def extract_error_message(response: requests.Response) -> str:
     """Extract a readable error message from an OpenProject error payload."""
@@ -1022,6 +1121,23 @@ def ensure_iso_date(value: str, arg_name: str) -> str:
     except ValueError as exc:
         raise OpenProjectError(f"{arg_name} must be in YYYY-MM-DD format.") from exc
     return normalized_value
+
+
+def hours_to_iso_duration(hours: float) -> str:
+    """Convert a numeric hours value to an ISO 8601 duration string (e.g. 1.5 -> 'PT1H30M').
+
+    The fractional hours are converted to minutes and rounded to the nearest whole
+    minute before building the duration string (e.g. 1.508 h → 90 min → 'PT1H30M').
+    """
+    if hours <= 0:
+        raise OpenProjectError("hours must be a positive number.")
+    total_minutes = round(hours * 60)
+    h, m = divmod(total_minutes, 60)
+    if h and m:
+        return f"PT{h}H{m}M"
+    if h:
+        return f"PT{h}H"
+    return f"PT{m}M"
 
 
 def extract_numeric_id_from_href(href: str, resource: str) -> Optional[int]:
@@ -1737,6 +1853,47 @@ def command_log_decision(args: argparse.Namespace) -> None:
     print(f"Created decision log: {written_path}")
 
 
+def command_log_spent_hours(args: argparse.Namespace) -> None:
+    """Find or create a work package in a project and log spent hours against it."""
+    project_ref = require_project(args.project)
+    client = build_client_from_env()
+    project = client.resolve_project(project_ref)
+
+    spent_on = ensure_iso_date(args.spent_on, "--spent-on") if args.spent_on else None
+
+    wp, created = client.find_or_create_work_package(
+        project=project,
+        subject=args.work_package,
+        type_name=args.type,
+    )
+    wp_id = wp.get("id")
+    try:
+        wp_id_int = int(wp_id)
+    except (TypeError, ValueError):
+        raise OpenProjectError(
+            f"Work package payload has a missing or non-numeric 'id': {wp_id!r}"
+        )
+    if created:
+        print(f"Created work package #{wp_id_int}: {wp.get('subject', args.work_package)}")
+    else:
+        print(f"Found existing work package #{wp_id_int}: {wp.get('subject', args.work_package)}")
+
+    time_entry = client.log_time(
+        work_package_id=wp_id_int,
+        hours=args.hours,
+        activity_name=args.activity,
+        spent_on=spent_on,
+        comment=args.comment,
+    )
+    entry_id = time_entry.get("id", "?")
+    logged_date = time_entry.get("spentOn") or spent_on or datetime.now().date().isoformat()
+    print(
+        f"Logged {args.hours}h on work package #{wp_id} "
+        f"(date: {logged_date}, activity: '{args.activity}', time entry #{entry_id})."
+    )
+    maybe_print_json(time_entry, args.debug_json)
+
+
 def build_parser() -> argparse.ArgumentParser:
     """Build CLI argument parser and subcommands."""
     parser = argparse.ArgumentParser(
@@ -2033,6 +2190,50 @@ def build_parser() -> argparse.ArgumentParser:
     parser_decision.add_argument("--impact", help="Optional impact notes.")
     parser_decision.add_argument("--followup", help="Optional follow-up actions.")
     parser_decision.set_defaults(func=command_log_decision)
+
+    parser_log_hours = subparsers.add_parser(
+        "log-spent-hours",
+        help="Log spent hours on a work package (find or create it).",
+        description=(
+            "Find a work package by subject in a project (creating it if absent) "
+            "and log a time entry against it."
+        ),
+    )
+    parser_log_hours.add_argument(
+        "--project",
+        help="Project ID or identifier. Optional when OPENPROJECT_DEFAULT_PROJECT is set.",
+    )
+    parser_log_hours.add_argument(
+        "--work-package",
+        required=True,
+        help="Work package subject. An existing work package is found by exact subject match; "
+             "a new one is created if none is found.",
+    )
+    parser_log_hours.add_argument(
+        "--hours",
+        type=float,
+        required=True,
+        help="Number of hours to log (e.g. 1 or 1.5).",
+    )
+    parser_log_hours.add_argument(
+        "--activity",
+        required=True,
+        help="Time entry activity name (e.g. 'Internal discussion and meetings').",
+    )
+    parser_log_hours.add_argument(
+        "--spent-on",
+        help="Date the time was spent (YYYY-MM-DD). Defaults to today.",
+    )
+    parser_log_hours.add_argument(
+        "--comment",
+        help="Optional comment for the time entry.",
+    )
+    parser_log_hours.add_argument(
+        "--type",
+        default="Task",
+        help="Work package type name used when creating a new work package (default: Task).",
+    )
+    parser_log_hours.set_defaults(func=command_log_spent_hours)
 
     return parser
 

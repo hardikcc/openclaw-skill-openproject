@@ -62,6 +62,11 @@ Use `python scripts/openproject_cli.py <command> [args]`.
   - Writes output to provided path or default `project-knowledge/status/YYYY-MM-DD-weekly-status.md`.
 - `log-decision --project <id|identifier> --title "..." --decision "..." [--context ...] [--impact ...] [--followup ...]`
   - Create a decision markdown entry in `project-knowledge/decisions`.
+- `log-spent-hours --project <id|identifier> --work-package "..." --hours <N> --activity "..." [--spent-on YYYY-MM-DD] [--comment "..."] [--type Task]`
+  - Find a work package by exact subject in the project (or create it when absent) and log a time entry against it.
+  - Use `--activity` to specify the time entry category (e.g. `"Internal discussion and meetings"`).
+  - `--hours` accepts decimal values (e.g. `1`, `1.5`).
+  - `--spent-on` defaults to today when omitted.
 
 Wiki commands may exist in the CLI for legacy compatibility, but they are out of scope for this skill and should not be used in normal workflows.
 
@@ -110,6 +115,14 @@ Wiki commands may exist in the CLI for legacy compatibility, but they are out of
 
 - Explain that wiki read/write is not supported by this skill due to inconsistent API behavior.
 - When documentation updates are requested, create or update local markdown artifacts instead (for example in `project-knowledge/` or `templates/`) and note that wiki sync is manual.
+
+### Logging spent hours
+
+- Use `log-spent-hours` to record time against a work package.
+- The command automatically finds an existing work package by exact subject match, or creates a new one when none is found.
+- Activity names are validated via `/time_entries/activities`; if an activity is unknown, the error message will list the valid activity options for this OpenProject instance.
+- Return the time entry ID and work package ID for traceability.
+- Omit `--spent-on` to default to today's date.
 
 ### Decision logging
 
