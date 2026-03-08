@@ -147,6 +147,37 @@ class HelperTests(unittest.TestCase):
         with self.assertRaises(cli.OpenProjectError):
             cli.OpenProjectClient.log_time(client, work_package_id=1, hours=0, activity_name="x")
 
+    def test_log_time_uses_provided_date(self) -> None:
+        """log_time sends the supplied spent_on date in the API payload."""
+        client = MagicMock(spec=cli.OpenProjectClient)
+        client.resolve_time_entry_activity.return_value = ("Development", "/api/v3/time_entries/activities/1")
+        client._request.return_value = {"id": 5, "spentOn": "2026-01-15"}
+
+        cli.OpenProjectClient.log_time(
+            client, work_package_id=7, hours=1, activity_name="Development", spent_on="2026-01-15"
+        )
+
+        call_args = client._request.call_args
+        payload = call_args.kwargs.get("payload") or call_args[1].get("payload") or call_args[0][2]
+        self.assertEqual(payload["spentOn"], "2026-01-15")
+
+    def test_log_time_defaults_to_today(self) -> None:
+        """log_time uses today's date when spent_on is not provided."""
+        from datetime import datetime as _dt
+
+        today = _dt.now().date().isoformat()
+        client = MagicMock(spec=cli.OpenProjectClient)
+        client.resolve_time_entry_activity.return_value = ("Development", "/api/v3/time_entries/activities/1")
+        client._request.return_value = {"id": 6, "spentOn": today}
+
+        cli.OpenProjectClient.log_time(
+            client, work_package_id=8, hours=2, activity_name="Development"
+        )
+
+        call_args = client._request.call_args
+        payload = call_args.kwargs.get("payload") or call_args[1].get("payload") or call_args[0][2]
+        self.assertEqual(payload["spentOn"], today)
+
 
 if __name__ == "__main__":
     unittest.main()

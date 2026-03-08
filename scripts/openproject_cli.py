@@ -1881,9 +1881,10 @@ def command_log_spent_hours(args: argparse.Namespace) -> None:
         comment=args.comment,
     )
     entry_id = time_entry.get("id", "?")
+    logged_date = time_entry.get("spentOn") or spent_on or datetime.now().date().isoformat()
     print(
         f"Logged {args.hours}h on work package #{wp_id} "
-        f"(activity: '{args.activity}', time entry #{entry_id})."
+        f"(date: {logged_date}, activity: '{args.activity}', time entry #{entry_id})."
     )
     maybe_print_json(time_entry, args.debug_json)
 
