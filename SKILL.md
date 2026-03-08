@@ -120,7 +120,7 @@ Wiki commands may exist in the CLI for legacy compatibility, but they are out of
 
 - Use `log-spent-hours` to record time against a work package.
 - The command automatically finds an existing work package by exact subject match, or creates a new one when none is found.
-- Always confirm the activity name with `list-types` / knowledge of the OpenProject instance before logging; a clear error is raised when the activity is unknown.
+- Activity names are validated via `/time_entries/activities`; if an activity is unknown, the error message will list the valid activity options for this OpenProject instance.
 - Return the time entry ID and work package ID for traceability.
 - Omit `--spent-on` to default to today's date.
 
