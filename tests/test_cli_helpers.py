@@ -165,15 +165,24 @@ class HelperTests(unittest.TestCase):
         """log_time uses today's date when spent_on is not provided."""
         from datetime import datetime as _dt
 
-        today = _dt.now().date().isoformat()
+        # Use a fixed "now" and patch scripts.openproject_cli.datetime so that
+        # both the test and implementation agree on the date, avoiding
+        # flakiness around midnight.
+        fixed_now = _dt(2026, 1, 15, 12, 0, 0)
+        today = fixed_now.date().isoformat()
+
         client = MagicMock(spec=cli.OpenProjectClient)
         client.resolve_time_entry_activity.return_value = ("Development", "/api/v3/time_entries/activities/1")
         client._request.return_value = {"id": 6, "spentOn": today}
 
-        cli.OpenProjectClient.log_time(
-            client, work_package_id=8, hours=2, activity_name="Development"
-        )
+        with patch.object(cli, "datetime") as mock_datetime:
+            # Support both datetime.datetime.now() and datetime.date.today()
+            mock_datetime.datetime.now.return_value = fixed_now
+            mock_datetime.date.today.return_value = fixed_now.date()
 
+            cli.OpenProjectClient.log_time(
+                client, work_package_id=8, hours=2, activity_name="Development"
+            )
         call_args = client._request.call_args
         payload = call_args.kwargs.get("payload") or call_args[1].get("payload") or call_args[0][2]
         self.assertEqual(payload["spentOn"], today)
