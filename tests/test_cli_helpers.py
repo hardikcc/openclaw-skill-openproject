@@ -6,6 +6,7 @@ import importlib.util
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 
 def load_cli_module():
@@ -90,6 +91,61 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(cli.extract_legacy_wiki_page(wrapped)["title"], "Home")
         self.assertEqual(cli.extract_wiki_text({"text": {"raw": "abc"}}), "abc")
         self.assertEqual(cli.extract_wiki_text({"text": "def"}), "def")
+
+    # ------------------------------------------------------------------
+    # New tests for log-spent-hours feature
+    # ------------------------------------------------------------------
+
+    def test_hours_to_iso_duration_whole(self) -> None:
+        self.assertEqual(cli.hours_to_iso_duration(1), "PT1H")
+        self.assertEqual(cli.hours_to_iso_duration(2), "PT2H")
+
+    def test_hours_to_iso_duration_fractional(self) -> None:
+        self.assertEqual(cli.hours_to_iso_duration(1.5), "PT1H30M")
+        self.assertEqual(cli.hours_to_iso_duration(0.25), "PT15M")
+
+    def test_hours_to_iso_duration_zero_raises(self) -> None:
+        with self.assertRaises(cli.OpenProjectError):
+            cli.hours_to_iso_duration(0)
+        with self.assertRaises(cli.OpenProjectError):
+            cli.hours_to_iso_duration(-1)
+
+    def test_find_or_create_work_package_finds_existing(self) -> None:
+        """find_or_create_work_package returns existing WP without creating."""
+        existing_wp = {"id": 10, "subject": "Internal discussion and meetings"}
+        project = {"id": 1, "_links": {"self": {"href": "/api/v3/projects/1"}}}
+
+        client = MagicMock(spec=cli.OpenProjectClient)
+        client.list_work_packages.return_value = [existing_wp]
+
+        wp, created = cli.OpenProjectClient.find_or_create_work_package(
+            client, project=project, subject="Internal discussion and meetings"
+        )
+        self.assertFalse(created)
+        self.assertEqual(wp["id"], 10)
+        client.create_work_package.assert_not_called()
+
+    def test_find_or_create_work_package_creates_when_missing(self) -> None:
+        """find_or_create_work_package creates WP when subject not found."""
+        new_wp = {"id": 99, "subject": "Internal discussion and meetings"}
+        project = {"id": 1, "_links": {"self": {"href": "/api/v3/projects/1"}}}
+
+        client = MagicMock(spec=cli.OpenProjectClient)
+        client.list_work_packages.return_value = []
+        client.create_work_package.return_value = new_wp
+
+        wp, created = cli.OpenProjectClient.find_or_create_work_package(
+            client, project=project, subject="Internal discussion and meetings"
+        )
+        self.assertTrue(created)
+        self.assertEqual(wp["id"], 99)
+        client.create_work_package.assert_called_once()
+
+    def test_log_time_invalid_hours_raises(self) -> None:
+        """log_time rejects non-positive hours."""
+        client = MagicMock(spec=cli.OpenProjectClient)
+        with self.assertRaises(cli.OpenProjectError):
+            cli.OpenProjectClient.log_time(client, work_package_id=1, hours=0, activity_name="x")
 
 
 if __name__ == "__main__":
