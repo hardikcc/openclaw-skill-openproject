@@ -930,9 +930,8 @@ class OpenProjectClient:
         """
         project_id = int(project["id"])
         existing = self.list_work_packages(project_id, limit=limit)
-        lowered_subject = subject.strip().lower()
         for wp in existing:
-            if str(wp.get("subject", "")).strip().lower() == lowered_subject:
+            if wp.get("subject") == subject:
                 return wp, False
         created = self.create_work_package(
             project=project,
