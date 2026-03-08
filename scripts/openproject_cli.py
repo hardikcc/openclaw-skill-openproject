@@ -8,7 +8,7 @@ import json
 import os
 import re
 import sys
-from datetime import datetime
+import datetime
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import quote, urlparse
@@ -887,12 +887,41 @@ class OpenProjectClient:
             ) from fallback_error
 
     def get_time_entry_activities(self) -> List[Dict[str, Any]]:
-        """Return available time entry activity types."""
-        data = self._request("GET", "/time_entries/activities", expected_statuses=(200,))
+        """Return available time entry activity types.
+
+        Raises :class:`OpenProjectError` with a descriptive message when the
+        ``/time_entries/activities`` endpoint is not available (HTTP 404).  This
+        can happen on older OpenProject instances or when the time-tracking
+        module is disabled.
+        """
+        try:
+            data = self._request("GET", "/time_entries/activities", expected_statuses=(200,))
+        except OpenProjectError as exc:
+            if exc.status_code == 404:
+                raise OpenProjectError(
+                    "The /time_entries/activities endpoint returned HTTP 404. "
+                    "This usually means the time-tracking module is not enabled "
+                    "or the OpenProject version does not support this endpoint. "
+                    "Use --activity-id in the log-spent-hours command to specify the "
+                    "numeric activity ID directly and bypass the name lookup."
+                ) from exc
+            raise
         return extract_embedded_elements(data)
 
-    def resolve_time_entry_activity(self, activity_name: str) -> Tuple[str, str]:
-        """Resolve a time entry activity by name and return (name, href)."""
+    def resolve_time_entry_activity(
+        self, activity_name: str, activity_id: Optional[int] = None
+    ) -> Tuple[str, str]:
+        """Resolve a time entry activity and return (name, href).
+
+        When *activity_id* is provided, the activities list endpoint is skipped
+        and the href is built directly from the numeric ID.  This is useful when
+        ``/time_entries/activities`` returns a 404 on the target OpenProject
+        instance.
+        """
+        if activity_id is not None:
+            href = f"{API_PREFIX}/time_entries/activities/{activity_id}"
+            return activity_name, href
+
         lowered_target = activity_name.strip().lower()
         activities = self.get_time_entry_activities()
         available: List[str] = []
@@ -948,6 +977,7 @@ class OpenProjectClient:
         activity_name: str,
         spent_on: Optional[str] = None,
         comment: Optional[str] = None,
+        activity_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         """Log spent hours on a work package.
 
@@ -963,14 +993,19 @@ class OpenProjectClient:
             Date the time was spent (``YYYY-MM-DD``). Defaults to today.
         comment:
             Optional free-text comment for the time entry.
+        activity_id:
+            Numeric ID of the time entry activity.  When provided, the
+            activities list endpoint is not queried and *activity_name* is used
+            only as a label.  Useful when ``/time_entries/activities`` returns a
+            404 on the target OpenProject instance.
         """
         if hours <= 0:
             raise OpenProjectError("hours must be a positive number.")
 
-        _, activity_href = self.resolve_time_entry_activity(activity_name)
+        _, activity_href = self.resolve_time_entry_activity(activity_name, activity_id=activity_id)
 
         iso_duration = hours_to_iso_duration(hours)
-        date_value = spent_on if spent_on else datetime.now().date().isoformat()
+        date_value = spent_on if spent_on else datetime.datetime.now().date().isoformat()
 
         payload: Dict[str, Any] = {
             "hours": iso_duration,
@@ -1117,7 +1152,7 @@ def ensure_iso_date(value: str, arg_name: str) -> str:
     """Validate YYYY-MM-DD input and return the normalized value."""
     normalized_value = value.strip()
     try:
-        datetime.strptime(normalized_value, "%Y-%m-%d")
+        datetime.datetime.strptime(normalized_value, "%Y-%m-%d")
     except ValueError as exc:
         raise OpenProjectError(f"{arg_name} must be in YYYY-MM-DD format.") from exc
     return normalized_value
@@ -1435,7 +1470,7 @@ def build_weekly_summary(project: Dict[str, Any], work_packages: List[Dict[str, 
             in_progress.append(wp)
 
     project_name = str(project.get("name") or project.get("identifier") or project.get("id"))
-    today = datetime.now().date().isoformat()
+    today = datetime.datetime.now().date().isoformat()
 
     lines: List[str] = [
         f"# Weekly Status - {project_name}",
@@ -1822,7 +1857,7 @@ def command_weekly_summary(args: argparse.Namespace) -> None:
     if args.output:
         output_path = Path(args.output)
     else:
-        today = datetime.now().date().isoformat()
+        today = datetime.datetime.now().date().isoformat()
         output_path = DEFAULT_WEEKLY_STATUS_DIR / f"{today}-weekly-status.md"
 
     written_path = write_text_file(output_path, summary)
@@ -1835,7 +1870,7 @@ def command_log_decision(args: argparse.Namespace) -> None:
     configured_dir = os.getenv("OPENPROJECT_DECISION_LOG_DIR", "").strip()
     decision_dir = Path(configured_dir) if configured_dir else DEFAULT_DECISION_LOG_DIR
 
-    today = datetime.now().date().isoformat()
+    today = datetime.datetime.now().date().isoformat()
     filename = f"{today}_{slugify(args.title)}.md"
     file_path = unique_path(decision_dir / filename)
 
@@ -1884,9 +1919,10 @@ def command_log_spent_hours(args: argparse.Namespace) -> None:
         activity_name=args.activity,
         spent_on=spent_on,
         comment=args.comment,
+        activity_id=args.activity_id,
     )
     entry_id = time_entry.get("id", "?")
-    logged_date = time_entry.get("spentOn") or spent_on or datetime.now().date().isoformat()
+    logged_date = time_entry.get("spentOn") or spent_on or datetime.datetime.now().date().isoformat()
     print(
         f"Logged {args.hours}h on work package #{wp_id} "
         f"(date: {logged_date}, activity: '{args.activity}', time entry #{entry_id})."
@@ -2219,6 +2255,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--activity",
         required=True,
         help="Time entry activity name (e.g. 'Internal discussion and meetings').",
+    )
+    parser_log_hours.add_argument(
+        "--activity-id",
+        type=int,
+        default=None,
+        help=(
+            "Numeric ID of the time entry activity. "
+            "When provided, the /time_entries/activities lookup is skipped and "
+            "the ID is used directly to build the activity href. "
+            "Use this when the activities endpoint returns HTTP 404."
+        ),
     )
     parser_log_hours.add_argument(
         "--spent-on",

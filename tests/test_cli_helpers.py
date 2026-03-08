@@ -187,6 +187,50 @@ class HelperTests(unittest.TestCase):
         payload = call_args.kwargs.get("payload") or call_args[1].get("payload") or call_args[0][2]
         self.assertEqual(payload["spentOn"], today)
 
+    def test_resolve_time_entry_activity_with_id_skips_lookup(self) -> None:
+        """resolve_time_entry_activity uses the numeric ID directly when provided."""
+        client = MagicMock(spec=cli.OpenProjectClient)
+
+        name, href = cli.OpenProjectClient.resolve_time_entry_activity(
+            client, activity_name="Development", activity_id=7
+        )
+
+        self.assertEqual(name, "Development")
+        self.assertEqual(href, "/api/v3/time_entries/activities/7")
+        client.get_time_entry_activities.assert_not_called()
+
+    def test_log_time_with_activity_id_bypasses_lookup(self) -> None:
+        """log_time passes activity_id through to resolve_time_entry_activity."""
+        client = MagicMock(spec=cli.OpenProjectClient)
+        client.resolve_time_entry_activity.return_value = (
+            "Development",
+            "/api/v3/time_entries/activities/5",
+        )
+        client._request.return_value = {"id": 99, "spentOn": "2026-01-20"}
+
+        cli.OpenProjectClient.log_time(
+            client,
+            work_package_id=10,
+            hours=2,
+            activity_name="Development",
+            spent_on="2026-01-20",
+            activity_id=5,
+        )
+
+        client.resolve_time_entry_activity.assert_called_once_with("Development", activity_id=5)
+
+    def test_get_time_entry_activities_404_raises_helpful_error(self) -> None:
+        """get_time_entry_activities raises a descriptive error on HTTP 404."""
+        client = MagicMock(spec=cli.OpenProjectClient)
+        not_found = cli.OpenProjectError("not found", status_code=404)
+        client._request.side_effect = not_found
+
+        with self.assertRaises(cli.OpenProjectError) as ctx:
+            cli.OpenProjectClient.get_time_entry_activities(client)
+
+        self.assertIn("404", str(ctx.exception))
+        self.assertIn("--activity-id", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
